@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>MyRecipies</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="./styles.css" />
+
+    <!-- Libraries (no build step) -->
+    <!-- jsPDF + html2canvas for PDF generation from HTML -->
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <!-- Mammoth: .docx -> HTML -->
+    <script src="https://unpkg.com/mammoth/mammoth.browser.min.js"></script>
+    <!-- Marked: Markdown -> HTML -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+    <header class="site-header">
+        <h1>MyRecipies</h1>
+        <div class="actions">
+            <button id="exportSelectedBtn" class="btn" title="Download selected as a single merged PDF">Export Selected</button>
+            <button id="deleteSelectedBtn" class="btn btn-danger" title="Delete selected recipes">Delete Selected</button>
+        </div>
+    </header>
+
+    <main class="container">
+        <section class="panel import-panel">
+            <h2>Import Recipe</h2>
+
+            <div class="grid-2">
+                <div class="field">
+                    <label for="fileInput">File (txt, md, docx, pdf, png/jpg/webp)</label>
+                    <input id="fileInput" type="file" accept=".txt,.md,.docx,.pdf,.png,.jpg,.jpeg,.gif,.webp" />
+                </div>
+
+                <div class="field">
+                    <label for="titleInput">Recipe Title</label>
+                    <input id="titleInput" type="text" placeholder="e.g., Grandma's Apple Pie" />
+                </div>
+
+                <div class="field">
+                    <label for="categorySelect">Category</label>
+                    <div class="category-row">
+                        <select id="categorySelect">
+                            <option value="General">General</option>
+                            <option value="Desserts">Desserts</option>
+                            <option value="Meat">Meat</option>
+                            <option value="Vegetarian">Vegetarian</option>
+                            <option value="Vegan">Vegan</option>
+                            <option value="Gluten-Free">Gluten-Free</option>
+                            <option value="Breakfast">Breakfast</option>
+                            <option value="Beverages">Beverages</option>
+                            <option value="Soups">Soups</option>
+                            <option value="Salads">Salads</option>
+                        </select>
+                        <input id="newCategoryInput" type="text" placeholder="Add category…" />
+                        <button id="addCategoryBtn" class="btn btn-secondary">Add</button>
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label>&nbsp;</label>
+                    <button id="importBtn" class="btn btn-primary">Import & Convert to PDF</button>
+                </div>
+            </div>
+
+            <p class="hint">
+                Tip: For <strong>.docx</strong> we convert using Mammoth. For <strong>.md/.txt</strong> we render text to HTML, then to PDF. For images we embed them in a PDF page. If the file is already a <strong>.pdf</strong>, we keep it as-is.
+            </p>
+        </section>
+
+        <section class="panel">
+            <div class="toolbar">
+                <div class="field">
+                    <label for="filterCategory">Filter by Category</label>
+                    <select id="filterCategory">
+                        <option value="__all__">All</option>
+                    </select>
+                </div>
+
+                <div class="field grow">
+                    <label for="searchInput">Search</label>
+                    <input id="searchInput" type="text" placeholder="Title or content…" />
+                </div>
+            </div>
+
+            <div id="cards" class="cards"></div>
+            <p id="emptyState" class="empty">No recipes yet — import one above!</p>
+        </section>
+    </main>
+
+    <!-- Hidden work area for converting HTML -> PDF -->
+    <div id="renderRoot" class="render-root" aria-hidden="true"></div>
+
+    <template id="cardTemplate">
+        <article class="card" tabindex="0" role="button" aria-pressed="false">
+            <div class="card-head">
+                <input type="checkbox" class="select-box" aria-label="Select recipe" />
+                <div class="title"></div>
+            </div>
+            <div class="meta">
+                <span class="badge category"></span>
+                <span class="dim date"></span>
+            </div>
+            <div class="preview"></div>
+            <div class="card-actions">
+                <button class="btn btn-secondary viewBtn">View</button>
+                <button class="btn btn-secondary downloadBtn">Download PDF</button>
+                <button class="btn editBtn">Edit</button>
+                <button class="btn btn-danger deleteBtn">Delete</button>
+            </div>
+        </article>
+    </template>
+
+    <!-- View modal -->
+    <dialog id="viewDialog">
+        <div class="dialog-head">
+            <h3 id="viewTitle">Recipe</h3>
+            <button id="closeViewBtn" class="btn btn-icon" aria-label="Close">&times;</button>
+        </div>
+        <iframe id="viewFrame" title="Recipe preview"></iframe>
+    </dialog>
+
+    <!-- Edit modal -->
+    <dialog id="editDialog">
+        <h3>Edit Recipe</h3>
+        <div class="field">
+            <label for="editTitle">Title</label>
+            <input id="editTitle" type="text" />
+        </div>
+        <div class="field">
+            <label for="editCategory">Category</label>
+            <select id="editCategory"></select>
+        </div>
+        <div class="dialog-actions">
+            <button id="saveEditBtn" class="btn btn-primary">Save</button>
+            <button id="cancelEditBtn" class="btn">Cancel</button>
+        </div>
+    </dialog>
+
+    <script src="./app.js" type="module"></script>
+</body>
+</html>
