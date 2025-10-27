@@ -7,12 +7,9 @@
     <link rel="stylesheet" href="./styles.css" />
 
     <!-- Libraries (no build step) -->
-    <!-- jsPDF + html2canvas for PDF generation from HTML -->
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-    <!-- Mammoth: .docx -> HTML -->
     <script src="https://unpkg.com/mammoth/mammoth.browser.min.js"></script>
-    <!-- Marked: Markdown -> HTML -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
@@ -28,19 +25,30 @@
         <section class="panel import-panel">
             <h2>Import Recipe</h2>
 
+            <!-- Drop zone -->
+            <div id="dropZone" class="dropzone" aria-label="Drop files here">
+                <strong>Drag & drop</strong> files or folders here<br />
+                <span class="muted">txt, md, docx, pdf, png/jpg/webp</span>
+            </div>
+
             <div class="grid-2">
                 <div class="field">
-                    <label for="fileInput">File (txt, md, docx, pdf, png/jpg/webp)</label>
-                    <input id="fileInput" type="file" accept=".txt,.md,.docx,.pdf,.png,.jpg,.jpeg,.gif,.webp" />
+                    <label for="fileInput">Select Files (bulk supported)</label>
+                    <input id="fileInput" type="file" multiple accept=".txt,.md,.docx,.pdf,.png,.jpg,.jpeg,.gif,.webp" />
                 </div>
 
                 <div class="field">
-                    <label for="titleInput">Recipe Title</label>
-                    <input id="titleInput" type="text" placeholder="e.g., Grandma's Apple Pie" />
+                    <label for="dirInput">Or pick a folder (Chrome/Edge/Safari)</label>
+                    <input id="dirInput" type="file" webkitdirectory directory multiple />
                 </div>
 
                 <div class="field">
-                    <label for="categorySelect">Category</label>
+                    <label for="titleInput">Default Title (optional)</label>
+                    <input id="titleInput" type="text" placeholder="Used when a file lacks a clear title" />
+                </div>
+
+                <div class="field">
+                    <label for="categorySelect">Category for Imports</label>
                     <div class="category-row">
                         <select id="categorySelect">
                             <option value="General">General</option>
@@ -61,12 +69,52 @@
 
                 <div class="field">
                     <label>&nbsp;</label>
-                    <button id="importBtn" class="btn btn-primary">Import & Convert to PDF</button>
+                    <button id="importBtn" class="btn btn-primary">Import Selected</button>
+                </div>
+
+                <div class="field">
+                    <label>Bulk Import Progress</label>
+                    <div class="progress">
+                        <div id="progressBar" class="progress-bar" style="width:0%"></div>
+                    </div>
+                    <div id="progressText" class="muted" aria-live="polite"></div>
                 </div>
             </div>
-
             <p class="hint">
-                Tip: For <strong>.docx</strong> we convert using Mammoth. For <strong>.md/.txt</strong> we render text to HTML, then to PDF. For images we embed them in a PDF page. If the file is already a <strong>.pdf</strong>, we keep it as-is.
+                Drag & drop works with files and folders. DOCX converts via Mammoth; MD/TXT become HTML; images get embedded into a PDF; PDFs are kept as-is.
+            </p>
+        </section>
+
+        <!-- NEW: Windows folder organization -->
+        <section class="panel">
+            <h2>Organize to Windows Folders</h2>
+            <div class="grid-2">
+                <div class="field">
+                    <label>Target Library Folder</label>
+                    <div class="row">
+                        <button id="chooseLibraryBtn" class="btn btn-secondary">Choose Library Folder…</button>
+                        <span id="libraryPath" class="muted" title="Selected folder">No folder selected</span>
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label>&nbsp;</label>
+                    <div class="row">
+                        <button id="saveAllBtn" class="btn btn-primary" disabled>Save All to Folders</button>
+                        <button id="saveSelectedBtn" class="btn" disabled>Save Selected to Folders</button>
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label>Sync Progress</label>
+                    <div class="progress">
+                        <div id="syncBar" class="progress-bar" style="width:0%"></div>
+                    </div>
+                    <div id="syncText" class="muted" aria-live="polite"></div>
+                </div>
+            </div>
+            <p class="hint">
+                This writes PDFs as <code>/Category/Title.pdf</code> inside your chosen folder. Supported in Chromium-based browsers (Edge/Chrome). If disabled, try Edge/Chrome.
             </p>
         </section>
 
@@ -78,7 +126,6 @@
                         <option value="__all__">All</option>
                     </select>
                 </div>
-
                 <div class="field grow">
                     <label for="searchInput">Search</label>
                     <input id="searchInput" type="text" placeholder="Title or content…" />
@@ -86,11 +133,11 @@
             </div>
 
             <div id="cards" class="cards"></div>
-            <p id="emptyState" class="empty">No recipes yet — import one above!</p>
+            <p id="emptyState" class="empty">No recipes yet — import some above!</p>
         </section>
     </main>
 
-    <!-- Hidden work area for converting HTML -> PDF -->
+    <!-- Hidden render root -->
     <div id="renderRoot" class="render-root" aria-hidden="true"></div>
 
     <template id="cardTemplate">

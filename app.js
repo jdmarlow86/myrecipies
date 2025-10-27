@@ -13,6 +13,7 @@ let categories = storage.get("categories", ["General", "Desserts", "Meat", "Vege
 let selectedIds = new Set();
 
 const fileInput = $("#fileInput");
+const dirInput = $("#dirInput");
 const titleInput = $("#titleInput");
 const categorySelect = $("#categorySelect");
 const newCategoryInput = $("#newCategoryInput");
@@ -40,7 +41,20 @@ const editCategory = $("#editCategory");
 const saveEditBtn = $("#saveEditBtn");
 const cancelEditBtn = $("#cancelEditBtn");
 
+const dropZone = $("#dropZone");
+const progressBar = $("#progressBar");
+const progressText = $("#progressText");
+
+/* === NEW: Windows folder organization controls === */
+const chooseLibraryBtn = $("#chooseLibraryBtn");
+const libraryPath = $("#libraryPath");
+const saveAllBtn = $("#saveAllBtn");
+const saveSelectedBtn = $("#saveSelectedBtn");
+const syncBar = $("#syncBar");
+const syncText = $("#syncText");
+
 let editingId = null;
+let libraryRootHandle = null; // FileSystemDirectoryHandle (not persisted across sessions)
 
 /* ========= Init ========= */
 function initCategoryControls() {
@@ -50,7 +64,6 @@ function initCategoryControls() {
         opt.value = c; opt.textContent = c;
         categorySelect.appendChild(opt);
     }
-
     filterCategory.innerHTML = "";
     const all = document.createElement("option");
     all.value = "__all__"; all.textContent = "All";
@@ -77,70 +90,173 @@ addCategoryBtn.addEventListener("click", () => {
     newCategoryInput.value = "";
 });
 
-/* ========= Import & Convert ========= */
+/* ========= Single/Bulk Import Triggers ========= */
 importBtn.addEventListener("click", async () => {
-    const file = fileInput.files?.[0];
-    if (!file) { alert("Choose a file."); return; }
+    const files = gatherChosenFiles();
+    if (!files.length) { alert("Choose files first (or use drag & drop)."); return; }
+    await bulkImport(files);
+});
 
-    const title = (titleInput.value || file.name.replace(/\.[^.]+$/, "")).trim();
+fileInput.addEventListener("change", async (e) => {
+    if (e.target.files?.length) await bulkImport([...e.target.files]);
+});
+dirInput.addEventListener("change", async (e) => {
+    if (e.target.files?.length) await bulkImport([...e.target.files]);
+});
+
+/* ========= Drag & Drop ========= */
+["dragenter", "dragover"].forEach(evt => {
+    dropZone.addEventListener(evt, (e) => {
+        e.preventDefault(); e.stopPropagation();
+        dropZone.classList.add("dragover");
+    });
+});
+["dragleave", "drop"].forEach(evt => {
+    dropZone.addEventListener(evt, (e) => {
+        e.preventDefault(); e.stopPropagation();
+        dropZone.classList.remove("dragover");
+    });
+});
+dropZone.addEventListener("drop", async (e) => {
+    const dt = e.dataTransfer;
+    let files = [];
+    if (dt.items && dt.items.length && typeof dt.items[0].webkitGetAsEntry === "function") {
+        const entries = [...dt.items].map(i => i.webkitGetAsEntry()).filter(Boolean);
+        files = await readAllEntries(entries);
+    } else {
+        files = [...(dt.files || [])];
+    }
+    if (!files.length) return;
+    await bulkImport(files);
+});
+
+/* ========= Read folders recursively (webkitdirectory) ========= */
+async function readAllEntries(entries) {
+    const files = [];
+    async function traverse(entry) {
+        if (!entry) return;
+        if (entry.isFile) {
+            await new Promise((res) => entry.file((f) => { files.push(f); res(); }));
+        } else if (entry.isDirectory) {
+            const reader = entry.createReader();
+            await new Promise((res) => {
+                const readBatch = () => {
+                    reader.readEntries(async (batch) => {
+                        if (!batch.length) return res();
+                        await Promise.all(batch.map(traverse));
+                        readBatch();
+                    });
+                };
+                readBatch();
+            });
+        }
+    }
+    await Promise.all(entries.map(traverse));
+    return files;
+}
+
+/* ========= Bulk Import Engine ========= */
+function gatherChosenFiles() {
+    const a = fileInput.files ? [...fileInput.files] : [];
+    const b = dirInput.files ? [...dirInput.files] : [];
+    return [...a, ...b];
+}
+
+async function bulkImport(files) {
+    const allowed = new Set(["txt", "md", "docx", "pdf", "png", "jpg", "jpeg", "gif", "webp"]);
+    const toProcess = files.filter(f => {
+        const ext = (f.name.split(".").pop() || "").toLowerCase();
+        return allowed.has(ext);
+    });
+
+    if (!toProcess.length) {
+        alert("No supported files found in your selection.");
+        return;
+    }
+
+    const defaultTitle = (titleInput.value || "").trim();
     const category = categorySelect.value || "General";
 
-    try {
-        const { pdfBlob, previewHtml, searchText } = await convertFileToPdfAndPreview(file);
-        const pdfUrl = URL.createObjectURL(pdfBlob);
+    let done = 0, failed = 0;
+    setProgress(0, toProcess.length, 0);
 
-        const rec = {
-            id: uid(),
-            title, category,
-            created: Date.now(),
-            pdfUrl,
-            previewHtml,
-            searchText: (title + " " + searchText).toLowerCase()
-        };
-        recipes.unshift(rec);
-        storage.set("recipes", recipes);
+    const CONCURRENCY = 3;
+    const queue = [...toProcess];
+    const workers = new Array(Math.min(CONCURRENCY, queue.length)).fill(0).map(() => worker());
+    await Promise.all(workers);
 
-        // reset minimal
-        titleInput.value = "";
-        fileInput.value = "";
+    storage.set("recipes", recipes);
+    render();
+    resetPickers();
 
-        render();
-    } catch (err) {
-        console.error(err);
-        alert("Failed to import this file. See console for details.");
+    const msg = `Imported ${done} file(s). ${failed ? failed + " failed." : "All succeeded."}`;
+    progressText.textContent = msg;
+
+    async function worker() {
+        while (queue.length) {
+            const file = queue.shift();
+            try {
+                const { pdfBlob, previewHtml, searchText } = await convertFileToPdfAndPreview(file);
+                const pdfUrl = URL.createObjectURL(pdfBlob);
+                const title = defaultTitle || file.name.replace(/\.[^.]+$/, "");
+                const rec = {
+                    id: uid(),
+                    title, category,
+                    created: Date.now(),
+                    pdfUrl,
+                    previewHtml,
+                    searchText: (title + " " + searchText).toLowerCase()
+                };
+                recipes.unshift(rec);
+                done++;
+            } catch (err) {
+                console.error("Import failed:", file.name, err);
+                failed++;
+            } finally {
+                setProgress(done + failed, toProcess.length, failed);
+            }
+            await new Promise(r => setTimeout(r, 0));
+        }
     }
-});
+}
+
+function setProgress(current, total, failed = 0) {
+    const pct = total ? Math.round((current / total) * 100) : 0;
+    progressBar.style.width = `${pct}%`;
+    progressText.textContent = total
+        ? `Processing ${current}/${total}… ${failed ? `(${failed} failed)` : ""}`
+        : "";
+}
+function resetPickers() {
+    try { fileInput.value = ""; dirInput.value = ""; } catch { }
+    setProgress(0, 0, 0);
+}
 
 /* ========= File Type Converters ========= */
 async function convertFileToPdfAndPreview(file) {
-    const ext = file.name.split(".").pop().toLowerCase();
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
 
     if (ext === "pdf") {
-        // Keep as-is for PDF
         const blob = file.slice(0, file.size, "application/pdf");
         const previewHtml = `<p><strong>PDF:</strong> ${escapeHtml(file.name)} (kept as-is)</p>`;
         return { pdfBlob: blob, previewHtml, searchText: file.name };
     }
 
     if (["png", "jpg", "jpeg", "gif", "webp"].includes(ext)) {
-        // Image -> PDF
         const imgDataUrl = await fileToDataUrl(file);
         const { jsPDF } = window.jspdf;
-        const doc = new jsPDF({ unit: "pt", format: "letter" }); // 612x792
-        // Fit image into page preserving aspect
+        const doc = new jsPDF({ unit: "pt", format: "letter" });
         const img = await loadImage(imgDataUrl);
-        const pageW = 612 - 72 * 2, pageH = 792 - 72 * 2; // margins
+        const pageW = 612 - 72 * 2, pageH = 792 - 72 * 2;
         const scale = Math.min(pageW / img.width, pageH / img.height);
         const w = img.width * scale, h = img.height * scale;
         doc.addImage(imgDataUrl, "PNG", (612 - w) / 2, (792 - h) / 2, w, h);
         const pdfBlob = doc.output("blob");
-
         const previewHtml = `<img src="${imgDataUrl}" alt="Recipe image" />`;
         return { pdfBlob, previewHtml, searchText: "[image]" };
     }
 
     if (ext === "docx") {
-        // DOCX -> HTML (Mammoth) -> PDF
         const arrayBuf = await file.arrayBuffer();
         const result = await window.mammoth.convertToHtml({ arrayBuffer: arrayBuf });
         const html = sanitizeHtml(result.value || "<p>(empty)</p>");
@@ -174,7 +290,7 @@ async function convertFileToPdfAndPreview(file) {
     return { pdfBlob, previewHtml, searchText: text || file.name };
 }
 
-/* ========= Helpers: HTML -> PDF via html2canvas + jsPDF ========= */
+/* ========= HTML -> PDF via html2canvas + jsPDF ========= */
 async function htmlToPdfBlob(html, { title = "Recipe" } = {}) {
     renderRoot.innerHTML = `
     <article style="font-family: Georgia, serif; line-height: 1.35;">
@@ -182,28 +298,21 @@ async function htmlToPdfBlob(html, { title = "Recipe" } = {}) {
       ${html}
     </article>
   `;
-
-    // Render to canvas (split into pages if tall)
     const node = renderRoot;
     const canv = await html2canvas(node, { scale: 2, backgroundColor: "#ffffff" });
-    const imgData = canv.toDataURL("image/png");
 
     const { jsPDF } = window.jspdf;
     const pdf = new jsPDF({ unit: "pt", format: "letter" }); // 612x792
     const pageWidth = 612, pageHeight = 792;
-    // Place image with margins
     const margin = 36;
     const availW = pageWidth - margin * 2;
     const scale = availW / canv.width;
     const imgW = canv.width * scale;
-    const imgH = canv.height * scale;
 
-    // If image taller than one page, slice into pages
     let y = 0;
     const sliceHeightPx = Math.floor((pageHeight - margin * 2) / scale);
     while (y < canv.height) {
         const sliceH = Math.min(sliceHeightPx, canv.height - y);
-        // Create slice
         const sliceCanvas = document.createElement("canvas");
         sliceCanvas.width = canv.width;
         sliceCanvas.height = sliceH;
@@ -216,30 +325,26 @@ async function htmlToPdfBlob(html, { title = "Recipe" } = {}) {
         pdf.addImage(sliceData, "PNG", margin, margin, imgW, sliceHpt);
         y += sliceH;
     }
-
     return pdf.output("blob");
 }
 
-/* ========= General small helpers ========= */
+/* ========= General helpers ========= */
 function escapeHtml(s) {
-    return String(s)
-        .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
+    return String(s).replaceAll("&", "&amp;").replaceAll("<", "&lt;")
         .replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
 }
 function sanitizeHtml(html) {
-    // Very light sanitation; for a production app consider a robust sanitizer like DOMPurify.
     return String(html).replaceAll("<script", "&lt;script");
 }
 function limitPreview(html) {
     const div = document.createElement("div");
     div.innerHTML = html;
-    // get first few paragraphs/images
     const pieces = [];
     let count = 0;
     for (const node of div.childNodes) {
         if (count >= 3) break;
         if (node.nodeType === 1) {
-            if (node.tagName === "P" || node.tagName === "H1" || node.tagName === "H2") {
+            if (/^H[1-3]$/.test(node.tagName) || node.tagName === "P") {
                 pieces.push(node.outerHTML); count++;
             } else if (node.tagName === "IMG") {
                 pieces.push(node.outerHTML); count++;
@@ -273,7 +378,6 @@ function loadImage(src) {
 
 /* ========= Render Cards ========= */
 function render() {
-    // Filters
     const term = (searchInput.value || "").toLowerCase();
     const cat = filterCategory.value || "__all__";
 
@@ -284,11 +388,7 @@ function render() {
     });
 
     cardsEl.innerHTML = "";
-    if (filtered.length === 0) {
-        emptyState.style.display = "block";
-    } else {
-        emptyState.style.display = "none";
-    }
+    emptyState.style.display = filtered.length ? "none" : "block";
 
     for (const rec of filtered) {
         const tpl = document.importNode($("#cardTemplate").content, true);
@@ -310,7 +410,6 @@ function render() {
             card.setAttribute("aria-pressed", "true");
         }
 
-        // Selection behavior
         function toggleSel() {
             if (selectedIds.has(rec.id)) {
                 selectedIds.delete(rec.id);
@@ -330,7 +429,6 @@ function render() {
         });
         selectBox.addEventListener("change", toggleSel);
 
-        // Buttons
         tpl.querySelector(".viewBtn").addEventListener("click", () => {
             viewTitle.textContent = rec.title;
             viewFrame.src = rec.pdfUrl;
@@ -352,11 +450,17 @@ function render() {
 
         cardsEl.appendChild(tpl);
     }
+
+    // enable/disable save buttons based on FS access support + folder selected
+    const fsSupported = "showDirectoryPicker" in window;
+    chooseLibraryBtn.disabled = !fsSupported;
+    const canSave = fsSupported && !!libraryRootHandle;
+    saveAllBtn.disabled = !canSave;
+    saveSelectedBtn.disabled = !canSave;
 }
 function safeFileName(s) {
     return s.replace(/[\/\\?%*:|"<>]/g, "-").slice(0, 120) || "recipe";
 }
-
 closeViewBtn.addEventListener("click", () => viewDialog.close());
 
 /* ========= Edit ========= */
@@ -390,7 +494,6 @@ cancelEditBtn.addEventListener("click", () => editDialog.close());
 /* ========= Filtering & Search ========= */
 filterCategory.addEventListener("change", render);
 searchInput.addEventListener("input", () => {
-    // simple debounce
     clearTimeout(searchInput._t);
     searchInput._t = setTimeout(render, 150);
 });
@@ -407,36 +510,19 @@ deleteSelectedBtn.addEventListener("click", () => {
 
 exportSelectedBtn.addEventListener("click", async () => {
     if (selectedIds.size === 0) { alert("No recipes selected."); return; }
-
     const chosen = recipes.filter(r => selectedIds.has(r.id));
     const { jsPDF } = window.jspdf;
     const out = new jsPDF({ unit: "pt", format: "letter" });
 
-    // Append each existing PDF into the output via images (simple approach)
-    // Note: A production-grade merge would parse PDF bytes; here we rasterize for simplicity.
     for (let i = 0; i < chosen.length; i++) {
-        const pdfUrl = chosen[i].pdfUrl;
-        const data = await fetch(pdfUrl).then(r => r.blob());
-        const buf = await data.arrayBuffer();
-
-        // Render the first page as an image by loading in iframe + html2canvas fallback
-        // Simpler: embed the stored preview HTML into a new page instead of true merge.
-        // We'll show title + a link note for clarity.
         const title = chosen[i].title;
         const html = `
       <article style="font-family: Georgia, serif;">
         <h1 style="margin:0 0 8px 0;">${escapeHtml(title)}</h1>
-        <p style="color:#333">Embedded original PDF attached separately in your library. This merged export is a printable snapshot.</p>
+        <p style="color:#333">Embedded original PDF is stored in your library.</p>
         <p style="color:#555">Created: ${new Date(chosen[i].created).toLocaleString()}</p>
       </article>
     `;
-        const pageBlob = await htmlToPdfBlob(html, { title });
-        const pageUrl = URL.createObjectURL(pageBlob);
-        // Load as image and stamp
-        const arrBuf2 = await fetch(pageUrl).then(r => r.arrayBuffer());
-        // Convert first page to image by drawing onto canvas
-        // A simpler route: renderRoot snapshot again:
-        // Re-render the same HTML to image for the merged doc:
         renderRoot.innerHTML = html;
         const canv = await html2canvas(renderRoot, { scale: 2, backgroundColor: "#ffffff" });
         const imgData = canv.toDataURL("image/png");
@@ -461,18 +547,72 @@ function removeRecipe(id) {
     render();
 }
 
-/* ========= Initial seed (optional) ========= */
-// Uncomment to add a sample on first run
-// if (recipes.length === 0) {
-//   (async () => {
-//     const html = "<p>This is a sample recipe body.</p>";
-//     const pdfBlob = await htmlToPdfBlob(html, { title: "Sample Pancakes" });
-//     recipes.push({
-//       id: uid(), title: "Sample Pancakes", category: "Breakfast",
-//       created: Date.now(), pdfUrl: URL.createObjectURL(pdfBlob),
-//       previewHtml: html, searchText: "sample pancakes breakfast recipe"
-//     });
-//     storage.set("recipes", recipes);
-//     render();
-//   })();
-// }
+/* ========= NEW: Windows folder organization via File System Access ========= */
+chooseLibraryBtn?.addEventListener("click", async () => {
+    if (!("showDirectoryPicker" in window)) {
+        alert("This feature needs a Chromium browser (Edge/Chrome).");
+        return;
+    }
+    try {
+        libraryRootHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+        // We cannot get a real path string; show the directory name instead.
+        libraryPath.textContent = `Selected: ${libraryRootHandle.name}`;
+        syncSetProgress(0, 0);
+        render();
+    } catch (e) {
+        if (e?.name !== "AbortError") console.error(e);
+    }
+});
+
+saveAllBtn?.addEventListener("click", async () => {
+    if (!libraryRootHandle) return alert("Choose a library folder first.");
+    await syncRecipesToDisk(recipes);
+});
+
+saveSelectedBtn?.addEventListener("click", async () => {
+    if (!libraryRootHandle) return alert("Choose a library folder first.");
+    const chosen = recipes.filter(r => selectedIds.has(r.id));
+    if (!chosen.length) return alert("No recipes selected.");
+    await syncRecipesToDisk(chosen);
+});
+
+async function syncRecipesToDisk(list) {
+    syncSetProgress(0, list.length, 0);
+    let done = 0, failed = 0;
+    for (const rec of list) {
+        try {
+            await writeRecipePdf(rec);
+            done++;
+        } catch (err) {
+            console.error("Write failed:", rec.title, err);
+            failed++;
+        } finally {
+            syncSetProgress(done + failed, list.length, failed);
+            await new Promise(r => setTimeout(r, 0));
+        }
+    }
+    syncText.textContent = `Saved ${done}/${list.length}. ${failed ? failed + " failed." : "All done."}`;
+}
+
+function syncSetProgress(current, total, failed = 0) {
+    const pct = total ? Math.round((current / total) * 100) : 0;
+    syncBar.style.width = `${pct}%`;
+    syncText.textContent = total
+        ? `Saving ${current}/${total}… ${failed ? `(${failed} failed)` : ""}`
+        : "";
+}
+
+async function writeRecipePdf(rec) {
+    if (!libraryRootHandle) throw new Error("No library folder selected");
+    // Create/resolve category directory
+    const catDir = await libraryRootHandle.getDirectoryHandle(rec.category || "General", { create: true });
+    // Create/overwrite file
+    const base = safeFileName(rec.title || "recipe");
+    const fileHandle = await catDir.getFileHandle(`${base}.pdf`, { create: true });
+    const writable = await fileHandle.createWritable();
+
+    // Fetch the blob from the object URL and write
+    const blob = await fetch(rec.pdfUrl).then(r => r.blob());
+    await writable.write(blob);
+    await writable.close();
+}
